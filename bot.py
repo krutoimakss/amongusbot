@@ -14,7 +14,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("amongus-bot")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8938894207:AAE0GNhywZiHqP03Zd8PiMq6pFQsqToWWyo")
 DB_PATH = os.getenv("DB_PATH", "amongus.db")
 
 ROOM_SPAM_INTERVAL_MIN = 5
