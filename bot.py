@@ -94,6 +94,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS day_photos (
             chat_id INTEGER PRIMARY KEY,
             file_id TEXT,
+            media_type TEXT DEFAULT 'photo',
             caption TEXT,
             set_by INTEGER,
             set_at TEXT
@@ -101,6 +102,11 @@ def init_db():
         """
     )
     conn.commit()
+    try:
+        conn.execute("ALTER TABLE day_photos ADD COLUMN media_type TEXT DEFAULT 'photo'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # колонка уже есть
     conn.close()
 
 
@@ -241,13 +247,14 @@ def get_last_news(chat_id):
     return row
 
 
-def set_day_photo(chat_id, file_id, caption, set_by):
+def set_day_photo(chat_id, file_id, media_type, caption, set_by):
     conn = db()
     conn.execute(
-        "INSERT INTO day_photos (chat_id, file_id, caption, set_by, set_at) VALUES (?,?,?,?,?) "
+        "INSERT INTO day_photos (chat_id, file_id, media_type, caption, set_by, set_at) VALUES (?,?,?,?,?,?) "
         "ON CONFLICT(chat_id) DO UPDATE SET file_id=excluded.file_id, "
-        "caption=excluded.caption, set_by=excluded.set_by, set_at=excluded.set_at",
-        (chat_id, file_id, caption, set_by, datetime.now(timezone.utc).isoformat()),
+        "media_type=excluded.media_type, caption=excluded.caption, "
+        "set_by=excluded.set_by, set_at=excluded.set_at",
+        (chat_id, file_id, media_type, caption, set_by, datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()
     conn.close()
@@ -565,8 +572,18 @@ async def send_day_photo(chat_id: int):
     row = get_day_photo(chat_id)
     if not row:
         return
+    media_type = row["media_type"] or "photo"
+    caption = row["caption"] or None
+    file_id = row["file_id"]
     try:
-        await bot.send_photo(chat_id, row["file_id"], caption=row["caption"] or None)
+        if media_type == "video":
+            await bot.send_video(chat_id, file_id, caption=caption)
+        elif media_type == "animation":
+            await bot.send_animation(chat_id, file_id, caption=caption)
+        elif media_type == "document":
+            await bot.send_document(chat_id, file_id, caption=caption)
+        else:
+            await bot.send_photo(chat_id, file_id, caption=caption)
     except Exception as e:
         log.warning("send_day_photo failed for %s: %s", chat_id, e)
 
@@ -596,18 +613,29 @@ async def cmd_dayphoto(message: Message, command: CommandObject):
         await message.answer("Эта команда доступна только создателю чата.")
         return
 
-    if not message.photo:
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        media_type = "photo"
+    elif message.video:
+        file_id = message.video.file_id
+        media_type = "video"
+    elif message.animation:
+        file_id = message.animation.file_id
+        media_type = "animation"
+    elif message.document:
+        file_id = message.document.file_id
+        media_type = "document"
+    else:
         await message.answer(
-            "Отправьте фото с подписью /dayphoto, чтобы бот каждый день "
-            "в 10:00 по МСК публиковал это фото."
+            "Отправьте фото, видео, гифку или документ с подписью /dayphoto, "
+            "чтобы бот каждый день в 10:00 по МСК публиковал этот медиафайл."
         )
         return
 
-    file_id = message.photo[-1].file_id
     caption = (command.args or "").strip()
-    set_day_photo(message.chat.id, file_id, caption, user.id)
+    set_day_photo(message.chat.id, file_id, media_type, caption, user.id)
     schedule_dayphoto_job(message.chat.id)
-    await message.answer("Фото дня сохранено. Буду присылать его каждый день в 10:00 по МСК.")
+    await message.answer("Медиа дня сохранено. Буду присылать его каждый день в 10:00 по МСК.")
 
 
 @dp.message(Command("chatinfo"))
@@ -626,18 +654,4 @@ async def restore_jobs():
     for room in all_rooms():
         schedule_room_job(room["chat_id"])
     for cm in all_cool_messages():
-        schedule_cool_job(cm["chat_id"])
-    for dp_row in all_day_photos():
-        schedule_dayphoto_job(dp_row["chat_id"])
-
-
-async def main():
-    init_db()
-    scheduler.start()
-    await restore_jobs()
-    log.info("Bot started")
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        schedule_cool_job(cm
