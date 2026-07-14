@@ -3,6 +3,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -19,6 +20,7 @@ DB_PATH = os.getenv("DB_PATH", "amongus.db")
 
 ROOM_SPAM_INTERVAL_MIN = 5
 COOL_MESSAGE_INTERVAL_MIN = 15  # как часто бот кидает "позорное сообщение"
+MSK = ZoneInfo("Europe/Moscow")
 
 COLORS = [
     "Красный", "Зеленый", "Желтый", "Фиолетовый", "Бордовый",
@@ -37,7 +39,11 @@ WELCOME_TEXT = (
     "Ответьте на любое сообщение и напишите /coolmessage чтобы сохранить сообщение "
     "в легендарные этого чата\n"
     "Напишите /menu чтобы я написал это сообщение\n"
-    "Напишите /onlineroom чтобы посмотреть какая рума активна"
+    "Напишите /onlineroom чтобы посмотреть какая рума активна\n"
+    "Напишите /mutespam включить или /mutespam выключить чтобы управлять спамом румы\n"
+    "Напишите /lastnews чтобы посмотреть последние новости\n"
+    "Напишите /chatinfo чтобы узнать инфо о чате\n"
+    "Напишите /FutureBot чтобы узнать что будет в следующем обновлении"
 )
 
 # ---------------- DB ----------------
@@ -72,6 +78,23 @@ def init_db():
         CREATE TABLE IF NOT EXISTS cool_messages (
             chat_id INTEGER PRIMARY KEY,
             message_id INTEGER,
+            set_by INTEGER,
+            set_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS chat_settings (
+            chat_id INTEGER PRIMARY KEY,
+            spam_muted INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS last_news (
+            chat_id INTEGER PRIMARY KEY,
+            text TEXT,
+            set_by INTEGER,
+            set_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS day_photos (
+            chat_id INTEGER PRIMARY KEY,
+            file_id TEXT,
+            caption TEXT,
             set_by INTEGER,
             set_at TEXT
         );
@@ -179,6 +202,71 @@ def all_cool_messages():
     return rows
 
 
+def set_spam_muted(chat_id, muted: bool):
+    conn = db()
+    conn.execute(
+        "INSERT INTO chat_settings (chat_id, spam_muted) VALUES (?,?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET spam_muted=excluded.spam_muted",
+        (chat_id, 1 if muted else 0),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_spam_muted(chat_id) -> bool:
+    conn = db()
+    row = conn.execute(
+        "SELECT spam_muted FROM chat_settings WHERE chat_id=?", (chat_id,)
+    ).fetchone()
+    conn.close()
+    return bool(row["spam_muted"]) if row else False
+
+
+def set_last_news(chat_id, text, set_by):
+    conn = db()
+    conn.execute(
+        "INSERT INTO last_news (chat_id, text, set_by, set_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET text=excluded.text, "
+        "set_by=excluded.set_by, set_at=excluded.set_at",
+        (chat_id, text, set_by, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_last_news(chat_id):
+    conn = db()
+    row = conn.execute("SELECT * FROM last_news WHERE chat_id=?", (chat_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def set_day_photo(chat_id, file_id, caption, set_by):
+    conn = db()
+    conn.execute(
+        "INSERT INTO day_photos (chat_id, file_id, caption, set_by, set_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET file_id=excluded.file_id, "
+        "caption=excluded.caption, set_by=excluded.set_by, set_at=excluded.set_at",
+        (chat_id, file_id, caption, set_by, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_day_photo(chat_id):
+    conn = db()
+    row = conn.execute("SELECT * FROM day_photos WHERE chat_id=?", (chat_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def all_day_photos():
+    conn = db()
+    rows = conn.execute("SELECT * FROM day_photos").fetchall()
+    conn.close()
+    return rows
+
+
 # ---------------- Bot ----------------
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -198,6 +286,14 @@ def display_color(row) -> str:
     if row["username"]:
         return f"{row['color']} (@{row['username']})"
     return row["color"]
+
+
+async def is_chat_creator(chat_id: int, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        return member.status == "creator"
+    except Exception:
+        return False
 
 
 @dp.message(Command("start"))
@@ -299,6 +395,8 @@ ROOM_JOB_PREFIX = "room_"
 
 
 async def room_spam(chat_id: int):
+    if get_spam_muted(chat_id):
+        return
     room = get_room(chat_id)
     if not room:
         return
@@ -362,6 +460,26 @@ async def cmd_onlineroom(message: Message):
     )
 
 
+@dp.message(Command("mutespam"))
+async def cmd_mutespam(message: Message, command: CommandObject):
+    arg = (command.args or "").strip().lower()
+
+    if arg not in ("включить", "выключить"):
+        await message.answer(
+            "Используйте:\n"
+            "/mutespam включить — выключить спам румы\n"
+            "/mutespam выключить — включить спам румы"
+        )
+        return
+
+    if arg == "включить":
+        set_spam_muted(message.chat.id, True)
+        await message.answer("Спам румы выключен 🔇")
+    else:
+        set_spam_muted(message.chat.id, False)
+        await message.answer("Спам румы включен 🔊")
+
+
 COOL_JOB_PREFIX = "cool_"
 
 
@@ -419,11 +537,98 @@ async def cmd_coolmessage(message: Message):
     )
 
 
+@dp.message(Command("lastnews"))
+async def cmd_lastnews(message: Message, command: CommandObject):
+    user = message.from_user
+    get_or_create_user(message.chat.id, user.id, user.username, user.first_name)
+    args = (command.args or "").strip()
+
+    if args:
+        if not await is_chat_creator(message.chat.id, user.id):
+            await message.answer("Добавлять новости может только создатель чата.")
+            return
+        set_last_news(message.chat.id, args, user.id)
+        await message.answer("Новость сохранена. Теперь ее можно посмотреть командой /lastnews")
+        return
+
+    news = get_last_news(message.chat.id)
+    if not news:
+        await message.answer("Пока нет новостей.")
+        return
+    await message.answer(f"📰 Последние новости:\n\n{news['text']}")
+
+
+DAYPHOTO_JOB_PREFIX = "dayphoto_"
+
+
+async def send_day_photo(chat_id: int):
+    row = get_day_photo(chat_id)
+    if not row:
+        return
+    try:
+        await bot.send_photo(chat_id, row["file_id"], caption=row["caption"] or None)
+    except Exception as e:
+        log.warning("send_day_photo failed for %s: %s", chat_id, e)
+
+
+def schedule_dayphoto_job(chat_id: int):
+    job_id = f"{DAYPHOTO_JOB_PREFIX}{chat_id}"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+    scheduler.add_job(
+        send_day_photo,
+        "cron",
+        hour=10,
+        minute=0,
+        timezone=MSK,
+        args=[chat_id],
+        id=job_id,
+        replace_existing=True,
+    )
+
+
+@dp.message(Command("dayphoto"))
+async def cmd_dayphoto(message: Message, command: CommandObject):
+    user = message.from_user
+    get_or_create_user(message.chat.id, user.id, user.username, user.first_name)
+
+    if not await is_chat_creator(message.chat.id, user.id):
+        await message.answer("Эта команда доступна только создателю чата.")
+        return
+
+    if not message.photo:
+        await message.answer(
+            "Отправьте фото с подписью /dayphoto, чтобы бот каждый день "
+            "в 10:00 по МСК публиковал это фото."
+        )
+        return
+
+    file_id = message.photo[-1].file_id
+    caption = (command.args or "").strip()
+    set_day_photo(message.chat.id, file_id, caption, user.id)
+    schedule_dayphoto_job(message.chat.id)
+    await message.answer("Фото дня сохранено. Буду присылать его каждый день в 10:00 по МСК.")
+
+
+@dp.message(Command("chatinfo"))
+async def cmd_chatinfo(message: Message):
+    await message.answer(
+        "Привет новенький, инфо чата в этом канале: https://telegram.me/DuoBrawl"
+    )
+
+
+@dp.message(Command("FutureBot", ignore_case=True))
+async def cmd_futurebot(message: Message):
+    await message.answer("В следующем обновлении будет питомцы 🐾")
+
+
 async def restore_jobs():
     for room in all_rooms():
         schedule_room_job(room["chat_id"])
     for cm in all_cool_messages():
         schedule_cool_job(cm["chat_id"])
+    for dp_row in all_day_photos():
+        schedule_dayphoto_job(dp_row["chat_id"])
 
 
 async def main():
@@ -436,3 +641,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
