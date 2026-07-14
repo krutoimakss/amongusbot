@@ -656,4 +656,9 @@ async def main():
     init_db()
     scheduler.start()
     await restore_jobs()
-   
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
