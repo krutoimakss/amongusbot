@@ -565,6 +565,8 @@ async def cmd_lastnews(message: Message, command: CommandObject):
     await message.answer(f"📰 Последние новости:\n\n{news['text']}")
 
 
+DAYPHOTO_ALLOWED_USER_ID = 6271603562
+
 DAYPHOTO_JOB_PREFIX = "dayphoto_"
 
 
@@ -609,8 +611,8 @@ async def cmd_dayphoto(message: Message, command: CommandObject):
     user = message.from_user
     get_or_create_user(message.chat.id, user.id, user.username, user.first_name)
 
-    if not await is_chat_creator(message.chat.id, user.id):
-        await message.answer("Эта команда доступна только создателю чата.")
+    if user.id != DAYPHOTO_ALLOWED_USER_ID:
+        await message.answer("Эта команда доступна только определённому игроку.")
         return
 
     if message.photo:
@@ -654,4 +656,3 @@ async def restore_jobs():
     for room in all_rooms():
         schedule_room_job(room["chat_id"])
     for cm in all_cool_messages():
-        schedule_cool_job(cm
