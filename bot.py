@@ -22,6 +22,8 @@ ROOM_SPAM_INTERVAL_MIN = 5
 COOL_MESSAGE_INTERVAL_MIN = 15  # как часто бот кидает "позорное сообщение"
 MSK = ZoneInfo("Europe/Moscow")
 
+DAYPHOTO_OWNER_ID = 6271603562  # только этот пользователь может использовать /dayphoto
+
 COLORS = [
     "Красный", "Зеленый", "Желтый", "Фиолетовый", "Бордовый",
     "Коричневый", "Белый", "Черный", "Коралловый", "Сиреневый",
@@ -42,6 +44,7 @@ WELCOME_TEXT = (
     "Напишите /onlineroom чтобы посмотреть какая рума активна\n"
     "Напишите /mutespam включить или /mutespam выключить чтобы управлять спамом румы\n"
     "Напишите /lastnews чтобы посмотреть последние новости\n"
+    "Напишите /rules чтобы посмотреть правила чата\n"
     "Напишите /chatinfo чтобы узнать инфо о чате\n"
     "Напишите /FutureBot чтобы узнать что будет в следующем обновлении"
 )
@@ -94,6 +97,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS day_photos (
             chat_id INTEGER PRIMARY KEY,
             file_id TEXT,
+            media_type TEXT DEFAULT 'photo',
             caption TEXT,
             set_by INTEGER,
             set_at TEXT
@@ -101,6 +105,11 @@ def init_db():
         """
     )
     conn.commit()
+    try:
+        conn.execute("ALTER TABLE day_photos ADD COLUMN media_type TEXT DEFAULT 'photo'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # колонка уже существует
     conn.close()
 
 
@@ -241,13 +250,14 @@ def get_last_news(chat_id):
     return row
 
 
-def set_day_photo(chat_id, file_id, caption, set_by):
+def set_day_photo(chat_id, file_id, media_type, caption, set_by):
     conn = db()
     conn.execute(
-        "INSERT INTO day_photos (chat_id, file_id, caption, set_by, set_at) VALUES (?,?,?,?,?) "
+        "INSERT INTO day_photos (chat_id, file_id, media_type, caption, set_by, set_at) VALUES (?,?,?,?,?,?) "
         "ON CONFLICT(chat_id) DO UPDATE SET file_id=excluded.file_id, "
-        "caption=excluded.caption, set_by=excluded.set_by, set_at=excluded.set_at",
-        (chat_id, file_id, caption, set_by, datetime.now(timezone.utc).isoformat()),
+        "media_type=excluded.media_type, caption=excluded.caption, "
+        "set_by=excluded.set_by, set_at=excluded.set_at",
+        (chat_id, file_id, media_type, caption, set_by, datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()
     conn.close()
@@ -566,7 +576,11 @@ async def send_day_photo(chat_id: int):
     if not row:
         return
     try:
-        await bot.send_photo(chat_id, row["file_id"], caption=row["caption"] or None)
+        media_type = row["media_type"] or "photo"
+        if media_type == "video":
+            await bot.send_video(chat_id, row["file_id"], caption=row["caption"] or None)
+        else:
+            await bot.send_photo(chat_id, row["file_id"], caption=row["caption"] or None)
     except Exception as e:
         log.warning("send_day_photo failed for %s: %s", chat_id, e)
 
@@ -592,22 +606,45 @@ async def cmd_dayphoto(message: Message, command: CommandObject):
     user = message.from_user
     get_or_create_user(message.chat.id, user.id, user.username, user.first_name)
 
-    if not await is_chat_creator(message.chat.id, user.id):
-        await message.answer("Эта команда доступна только создателю чата.")
+    if user.id != DAYPHOTO_OWNER_ID:
+        await message.answer("Эта команда доступна только создателю бота.")
         return
 
-    if not message.photo:
+    if not message.photo and not message.video:
         await message.answer(
-            "Отправьте фото с подписью /dayphoto, чтобы бот каждый день "
-            "в 10:00 по МСК публиковал это фото."
+            "Отправьте фото или видео с подписью /dayphoto, чтобы бот каждый день "
+            "в 10:00 по МСК публиковал это медиа."
         )
         return
 
-    file_id = message.photo[-1].file_id
+    if message.video:
+        file_id = message.video.file_id
+        media_type = "video"
+    else:
+        file_id = message.photo[-1].file_id
+        media_type = "photo"
+
     caption = (command.args or "").strip()
-    set_day_photo(message.chat.id, file_id, caption, user.id)
+    set_day_photo(message.chat.id, file_id, media_type, caption, user.id)
     schedule_dayphoto_job(message.chat.id)
-    await message.answer("Фото дня сохранено. Буду присылать его каждый день в 10:00 по МСК.")
+    await message.answer("Медиа дня сохранено. Буду присылать его каждый день в 10:00 по МСК.")
+
+
+@dp.message(Command("rules"))
+async def cmd_rules(message: Message):
+    await message.answer(
+        "Правила чата\n\n"
+        "__0.00__ | **Использования читов**\n"
+        "Бан\n\n"
+        "__0.25__ | **Неактив либо не приходить на румы 1 день**\n"
+        "Предупреждение\n\n"
+        "__0.50__ | **оскорбление администрации**\n"
+        "Мут 5 минут Максимум 10\n\n"
+        "__1.00__ | **Спам**\n"
+        "Мут 5 минут Максимум 10\n\n"
+        "__1.25__ | **попытка снести чат либо бота**\n"
+        "Бан"
+    )
 
 
 @dp.message(Command("chatinfo"))
@@ -619,25 +656,4 @@ async def cmd_chatinfo(message: Message):
 
 @dp.message(Command("FutureBot", ignore_case=True))
 async def cmd_futurebot(message: Message):
-    await message.answer("В следующем обновлении будет питомцы 🐾")
-
-
-async def restore_jobs():
-    for room in all_rooms():
-        schedule_room_job(room["chat_id"])
-    for cm in all_cool_messages():
-        schedule_cool_job(cm["chat_id"])
-    for dp_row in all_day_photos():
-        schedule_dayphoto_job(dp_row["chat_id"])
-
-
-async def main():
-    init_db()
-    scheduler.start()
-    await restore_jobs()
-    log.info("Bot started")
-    await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    await message.answer("
