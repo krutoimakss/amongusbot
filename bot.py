@@ -656,4 +656,25 @@ async def cmd_chatinfo(message: Message):
 
 @dp.message(Command("FutureBot", ignore_case=True))
 async def cmd_futurebot(message: Message):
-    await message.answer("
+    await message.answer("В следующем обновлении будет питомцы 🐾")
+
+
+async def restore_jobs():
+    for room in all_rooms():
+        schedule_room_job(room["chat_id"])
+    for cm in all_cool_messages():
+        schedule_cool_job(cm["chat_id"])
+    for dp_row in all_day_photos():
+        schedule_dayphoto_job(dp_row["chat_id"])
+
+
+async def main():
+    init_db()
+    scheduler.start()
+    await restore_jobs()
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
